@@ -16,6 +16,10 @@ menyalakan LED.
 
 ---
 
+## 📹 Video Demo
+
+[![Tonton Video Demo](https://drive.google.com/thumbnail?id=19MTVb-Pvqy-t6Fzr_xwGn6ziKQ6XT9tx)](https://drive.google.com/file/d/19MTVb-Pvqy-t6Fzr_xwGn6ziKQ6XT9tx/view)
+
 ## 1. Latar Belakang dan Tujuan
 
 Rambu STOP, SLOW, dan GO adalah tanda yang paling sering muncul di jalan kota.
@@ -361,10 +365,10 @@ asli ditambahkan di `results/` setelah uji lapangan.
 
 | Nama | NIM |
 |------|-----|
-| | |
-| | |
-| | |
-
+| Bintang Ahmad | 2023071073 |
+| Rais Fadillah | 2023071043 |
+| Muhammad dapa | 2023071036 |
+| Jehan padillah | 2023071052 |
 ---
 
 Lisensi MIT.
