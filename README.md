@@ -1,344 +1,359 @@
-# Traffic Sign Recognition → LED Control (Jetson Nano)
+# Pengenalan Rambu Lalu Lintas dengan LED — Jetson Nano
 
-Sistem pengenalan rambu lalu lintas otomatis berbasis **NVIDIA Jetson Nano** dan kamera.
-Pipeline: **Camera → Sign Recognition → Decision Logic → GPIO → LED**.
+Tugas kelompok ini membuat sistem yang membaca rambu lalu lintas dari kamera,
+lalu menyalakan LED sesuai rambu yang sedang ditampilkan:
 
-Sistem mengenali minimal **3 jenis sign** (STOP, SLOW, GO) dan menyalakan **3 LED** sesuai
-keputusan. Jika tidak ada sign atau confidence di bawah threshold, **semua LED mati**
-(default `SAFE_STATE = "NONE"`; bisa diubah ke `"STOP"` untuk safe-state merah).
+| Rambu | Warna & Bentuk | LED yang menyala |
+|-------|----------------|------------------|
+| STOP | merah, oktagon | merah |
+| SLOW | kuning, segitiga | kuning |
+| GO | hijau, atau biru dengan panah putih | hijau |
+| tidak ada rambu | — | semua mati |
 
----
-
-## 1. Ringkasan
-
-| Komponen | Metode |
-|----------|--------|
-| Pengenalan sign | Computer Vision: deteksi warna (HSV) + analisis bentuk kontur (segi-8, segi-3, lingkaran/persegi; GO hijau atau biru+panah putih) |
-| Keputusan | Decision engine dengan konfirmasi temporal (N frame berturut) + safe-state fallback |
-| Aktuator | 3 LED via GPIO Jetson Nano (Jetson.GPIO) |
-| Antarmuka | Preview OpenCV (bbox + label + confidence + status LED) + log terminal |
-
-**Mengapa Computer Vision (bukan CNN)?**
-Deteksi warna+bentuk cukup andal untuk 3 sign dengan warna kontras (merah/kuning/hijau/biru),
-ringan di compute (Jetson Nano), dan mudah dikalibrasi. Arsitektur modular —
-`src/sign_recognition.py` dapat diganti dengan CNN/MobileNet/YOLO tanpa mengubah
-decision logic atau GPIO (lihat §7).
+Programnya berjalan di Jetson Nano. Kamera mengambil frame terus-menerus, setiap
+frame dianalisis untuk mencari rambu, lalu keputusannya dikirim ke GPIO untuk
+menyalakan LED.
 
 ---
 
-## 2. Spesifikasi Hardware
+## 1. Latar Belakang dan Tujuan
 
-| Item | Spesifikasi | Keterangan |
-|------|-------------|------------|
-| SBC | NVIDIA Jetson Nano (4GB) | JetPack 4.x / 5.x, Python 3.6+ |
-| Kamera | USB webcam atau CSI ( Raspberry Pi Camera v2 / module ) | 640×480 @ 30fps cukup |
-| LED Merah | 1× LED + resistor 220Ω | STOP |
-| LED Kuning | 1× LED + resistor 220Ω | SLOW |
-| LED Hijau | 1× LED + resistor 220Ω | GO |
-| Breadboard + jumper | — | Rangkaian uji |
-| Monitor + keyboard | Opsional | Untuk preview & kontrol |
+Rambu STOP, SLOW, dan GO adalah tanda yang paling sering muncul di jalan kota.
+Biasanya tanda seperti ini dibaca manusia untuk memutuskan berhenti, melambat,
+atau jalan. Ide proyek kami adalah membuat simulasi lampu lalu lintas: kamera
+sebagai "mata", komputer sebagai otak, dan tiga LED sebagai lampu.
 
-### Pin GPIO Jetson Nano (BOARD mode)
-
-| LED | GPIO (BCM) | Header Pin (BOARD) |
-|-----|------------|--------------------|
-| Merah (STOP) | GPIO17 | **11** |
-| Kuning (SLOW) | GPIO27 | **13** |
-| Hijau (GO) | GPIO23 | **16** |
-| GND (semua LED) | GND | **6 / 9 / 14 / 20 / 25** |
-
-> Catatan: pin dapat diubah di `config.py` (`LED_RED_PIN`, `LED_YELLOW_PIN`, `LED_GREEN_PIN`).
-> Di Jetson ini **pin 15 (GPIO22) dipakai driver fan/carrier board**, sehingga LED hijau
-> memakai **pin 16 (GPIO23)**.
+Tujuan proyek kami:
+1. Mendeteksi minimal tiga jenis rambu dari kamera.
+2. Menyalakan LED yang berbeda untuk setiap rambu.
+3. Menampilkan nama rambu, tingkat keyakinan, dan status LED di layar.
+4. Memastikan kondisi aman: kalau tidak ada rambu yang terbaca, semua LED mati.
 
 ---
 
-## 3. Spesifikasi Software
+## 2. Alat dan Bahan
+
+| No | Alat | Keterangan |
+|----|------|------------|
+| 1 | NVIDIA Jetson Nano 4GB | sebagai pemroses utama |
+| 2 | Kamera CSI Raspberry Pi v2 (imx219) | 2 buah di board, dipakai sensor 0 |
+| 3 | LED 5 mm: merah, kuning, hijau | 1 buah untuk masing-masing warna |
+| 4 | Resistor 220 ohm | 3 buah, seri dengan tiap LED |
+| 5 | Breadboard + jumper male-male | 1 set |
+| 6 | Monitor + keyboard | opsional, untuk preview dan debugging |
+
+Belanja komponen hanya perlu 3 LED, 3 resistor, 1 breadboard, dan beberapa
+kabel jumper.
+
+---
+
+## 3. Software
 
 | Software | Versi / Catatan |
 |----------|-----------------|
-| OS | Ubuntu 18.04/20.04 (JetPack) atau Ubuntu 20.04+ (dev) |
-| Python | 3.6+ (Jetson Nano default 3.6; dev bisa 3.8+) |
-| OpenCV | `opencv-python` atau preinstall JetPack (`cv2`) |
-| NumPy | ≥ 1.19 |
-| Jetson.GPIO | ≥ 2.0 (khusus Jetson; fallback mock di non-Jetson) |
-| pytest | Opsional, untuk unit test |
+| OS | Ubuntu 18.04, JetPack 4.x |
+| Python | 3.6.9 (bawaan Jetson Nano) |
+| OpenCV | 3.2.0 (bawaan JetPack, `python3-opencv`) |
+| NumPy | 1.19 |
+| Jetson.GPIO | 2.0.17, untuk menyalakan LED |
+| GStreamer | untuk membaca kamera CSI |
 
-Dependensi: `requirements.txt`.
+Kamera CSI di Jetson tidak bisa dibaca dengan `cv2.VideoCapture()` biasa, hasilnya
+frame hijau. Jadi program memakai `nvarguscamerasrc` lewat GStreamer
+(`src/camera.py`). Paket yang perlu dipasang:
+
+```bash
+sudo apt-get install -y python3-gi gir1.2-gstreamer-1.0
+```
 
 ---
 
 ## 4. Cara Kerja Sistem
 
 ```
-┌─────────┐   frame    ┌──────────────────┐   SignResult   ┌─────────────────┐
-│ Camera  │ ─────────► │ Sign Recognition │ ─────────────► │ Decision Logic  │
-└─────────┘            │ (HSV + shape)    │ sign,conf,bbox │ (temporal filter│
-                       └──────────────────┘                │  + safe-state)  │
-                                                           └────────┬────────┘
-                                                                    │ sign
-                                                                    ▼
+┌─────────┐   frame    ┌──────────────────┐   hasil    ┌─────────────────┐
+│ Kamera  │ ─────────► │ Sign Recognition │ ─────────► │ Decision Logic  │
+└─────────┘            │  (warna + bentuk) │  sign, conf│ (konfirmasi N   │
+                         └──────────────────┘            │  frame)         │
+                                                          └────────┬────────┘
+                                                                   │ sign
+                                                                   ▼
 ┌─────────┐   GPIO     ┌──────────────────┐                  ┌──────────────┐
 │   LED   │ ◄───────── │  GPIO Controller │ ◄────────────────│   Decision   │
 │ R/Y/G   │            │  (Jetson.GPIO)   │                  └──────────────┘
 └─────────┘            └──────────────────┘
 ```
 
-### Alur per frame
-1. **Capture** — ambil frame dari kamera (640×480).
-2. **Recognition** — konversi ke HSV, buat mask per warna (merah/kuning/hijau/biru),
-   temukan kontur, klasifikasi bentuk (segi-8=STOP, segi-3=SLOW, lingkaran/rect=GO;
-   GO biru dengan panah putih juga dikenali), hitung **confidence** dari kombinasi
-   warna+bentuk+ukuran.
-3. **Decision** — sign hanya diterima jika muncul **N frame berturut** (konfirmasi
-   temporal, menghilangkan flicker). Jika confidence < threshold atau tidak ada kontur →
-   **semua LED mati** (`SAFE_STATE = "NONE"`).
-4. **GPIO** — LED dinyalakan sesuai keputusan (hanya satu LED nyala).
-5. **Display** — bbox + label sign + confidence + status LED ditampilkan (jendela OpenCV
-   dan/atau log terminal).
+Langkah per frame:
 
-### Confidence & Threshold
-- `MIN_CONFIDENCE` default **0.55** (di `config.py`, bisa via `--min-conf`).
-- Skor confidence = `0.30·color + 0.60·shape·shape_score + 0.10·size` (0–1).
-- Tahan LED terakhir: `SAFE_HOLD_SECONDS = 0.5` dtk (tahan sebentar agar tidak
-  flicker saat tanda berganti).
+1. Kamera mengambil frame 640x480.
+2. Frame dikecilkan ke lebar 320 px supaya lebih cepat di Jetson.
+3. Frame diubah ke HSV, lalu dibuat mask untuk tiap warna (merah, kuning, hijau, biru).
+4. Dari tiap mask dicari kontur, lalu bentuknya diklasifikasi dari *convex hull*:
+   oktagon berarti STOP, segitiga berarti SLOW, lingkaran atau persegi berarti GO.
+5. Bentuk yang tidak cocok dengan warnanya langsung dibuang, jadi benda hijau
+   sembarangan tidak akan terbaca sebagai GO.
+6. Confidence dihitung dari gabungan warna, bentuk, dan ukuran. Kalau nilainya
+   di bawah 0,55, rambu dianggap tidak terbaca.
+7. Rambu baru dipakai kalau terlihat stabil di 2 frame berturut-turut, supaya tidak
+   berkedip karena gangguan sesaat.
+8. Keputusan dikirim ke GPIO, LED dinyalakan, lalu hasilnya digambar di layar
+   (kotak pembatas, nama rambu, keyakinan, dan status LED).
 
-### Kondisi tanpa tanda (tidak ada sign)
-- Tidak ada sign terdeteksi → **semua LED mati** (`SAFE_STATE = "NONE"`).
-- Confidence < threshold → **semua LED mati**.
-- Ingin safe-state merah (fail-safe kendaraan)? Ubah `SAFE_STATE = "STOP"` di `config.py`.
-- Kamera gagal baca frame → pipeline berhenti & LED di-cleanup (all OFF).
+Kalau rambu hilang, LED terakhir ditahan 0,5 detik lalu dimatikan semua.
+
+### Perhitungan confidence
+
+```
+confidence = 0,30 × warna + 0,60 × bentuk + 0,10 × ukuran
+```
+
+Bentuk paling berat bobotnya karena bentuk inilah yang membedakan STOP, SLOW, dan GO.
+Kalau bentuknya tidak sesuai, nilai confidence paling tinggi hanya 0,40, masih di bawah
+ambang 0,55, jadi kandidatnya ditolak.
+
+### Rambu GO versi biru
+
+Rambu GO yang kami pakai berwarna biru dengan panah putih. Panah putih tidak masuk
+ke mask warna karena saturasinya rendah, jadi kontur luar yang terbaca tetap bentuk
+rambunya. Karena itu ada dua mask yang sama-sama dipetakan ke GO: hijau dan biru.
+
+### Tuning
+
+Semua angka tunable ada di `config.py`:
+
+| Variabel | Default | Keterangan |
+|----------|---------|------------|
+| `MIN_CONFIDENCE` | 0.55 | ambang minimum rambu dianggap sah |
+| `PROCESS_WIDTH` | 320 | lebar frame saat deteksi |
+| `STABLE_FRAMES` | 2 | jumlah frame konfirmasi |
+| `SAFE_STATE` | "NONE" | kondisi tanpa rambu (semua LED mati) |
+| `SAFE_HOLD_SECONDS` | 0.5 | lama LED terakhir ditahan |
+| `HSV_RANGES` | — | rentang warna tiap tanda |
+
+Kalau warna rambu tidak cocok dengan rentang di `config.py`, pakai
+`tools/hsv_calibration.py` untuk melihat HSV di layar dan menyalin nilainya.
 
 ---
 
-## 5. Wiring (Rangkaian)
+## 5. Rangkaian LED
 
 ```
-Jetson Nano Header                LED Circuit
-─────────────────                 ───────────
-Pin 11 (GPIO17) ──[220Ω]──►|◄──┐  LED Merah (STOP)
-Pin 13 (GPIO27) ──[220Ω]──►|◄──┤  LED Kuning (SLOW)
-Pin 16 (GPIO23) ──[220Ω]──►|◄──┤  LED Hijau (GO)
+Jetson Nano 40-pin                 Breadboard
+──────────────────                 ──────────────────────────────
+Pin 11 (GPIO17) ──[220Ω]──►|◄──┐   LED merah   (STOP)
+Pin 13 (GPIO27) ──[220Ω]──►|◄──┤   LED kuning  (SLOW)
+Pin 16 (GPIO23) ──[220Ω]──►|◄──┤   LED hijau   (GO)
                               │
-GND (Pin 6) ──────────────────┘
+GND (Pin 6) ───────────────────┘
 ```
 
-- **Resistor 220Ω** seri dengan anode LED; katode ke GND.
-- polarity: GPIO HIGH → LED nyala (`LED_ACTIVE_HIGH = True`). Ubah ke `False` jika
-  rangkaian aktif-LOW (LED ke VCC, resistor ke GPIO).
-- Diagram lebih rinci: [`docs/WIRING.md`](docs/WIRING.md).
+Aturan pemasangannya: kaki panjang LED (anode) disambung ke resistor, kaki
+pendek (katode) ke GND. Resistor 220 ohm menjaga arus, jadi tiap LED menerima
+sekitar 5 sampai 6 mA, aman untuk pin GPIO Jetson.
+
+| Fungsi | Pin header | BCM | Warna LED |
+|--------|-----------|-----|-----------|
+| STOP | 11 | GPIO17 | merah |
+| SLOW | 13 | GPIO27 | kuning |
+| GO | 16 | GPIO23 | hijau |
+| GND | 6 | — | — |
+
+Detail letak lubang breadboard dan urutan pemasangannya ada di
+[`docs/WIRING.md`](docs/WIRING.md).
 
 ---
 
-## 6. Instalasi & Menjalankan
+## 6. Instalasi dan Menjalankan
 
-### 6.1 Di Jetson Nano (produksi)
+### 6.1 Di Jetson Nano
+
 ```bash
-# clone
 git clone https://github.com/raisfadillahh/AI-For-Robotic_Kelompok8.git
 cd AI-For-Robotic_Kelompok8
 
-# install dependensi
+sudo apt-get install -y python3-opencv python3-numpy python3-gi gir1.2-gstreamer-1.0
 pip3 install -r requirements.txt
-# (atau: sudo apt install python3-opencv python3-numpy)
 
-# jalankan dengan kamera nyata + GPIO
 python3 src/main.py
-
-# nonaktifkan jendela preview (headless)
-python3 src/main.py --no-preview
 ```
 
-### 6.2 Mode mock (tanpa hardware — untuk demo / CI / development)
+Tambahkan `--no-preview` kalau dijalankan lewat SSH atau tanpa monitor.
+Program berhenti dengan tombol `q` di jendela preview, atau `Ctrl+C` di terminal.
+
+### 6.2 Mode mock
+
+Untuk mencoba logika tanpa kamera dan tanpa LED:
+
 ```bash
 python3 src/main.py --mock
 ```
-Menjalankan simulasi urutan sign (STOP→SLOW→GO→NONE→STOP) dan mencetak status LED
-tanpa membutuhkan kamera atau GPIO fisik.
 
-### 6.3 Uji satu gambar statis
+Program menjalankan urutan STOP, SLOW, GO, tanpa rambu, lalu STOP, sambil mencetak
+status LED tiap tahap.
+
+### 6.3 Menguji satu gambar
+
 ```bash
-python3 src/main.py --image assets/signs/stop.jpg
+python3 src/main.py --image assets/signs/stop.jpg --no-preview --save results/out.jpg
 ```
 
 ### 6.4 Unit test
+
 ```bash
-python3 -m pytest tests/ -v
-# atau tanpa pytest:
 python3 tests/test_pipeline.py
+# atau
+python3 -m pytest tests/ -v
 ```
 
-### Argumen CLI
-| Argumen | Fungsi |
-|---------|--------|
-| `--mock` | Mode simulasi (tanpa kamera/GPIO) |
-| `--image PATH` | Proses satu gambar |
-| `--save PATH` | Simpan hasil anotasi (berguna via SSH/headless) |
-| `--method color_shape\|yolo` | Metode pengenalan (default `color_shape`) |
-| `--no-preview` | Matikan jendela OpenCV |
-| `--min-conf FLOAT` | Threshold confidence (default 0.55) |
+### 6.5 Alat bantu
 
-Contoh uji gambar via SSH tanpa jendela:
 ```bash
-python3 src/main.py --image foto_stop.jpg --no-preview --save results/out_stop.jpg
+python3 tools/benchmark_detection.py --bench      # mengukur FPS
+python3 tools/benchmark_detection.py --dir fotoku  # menguji folder gambar
+python3 tools/capture_signs.py --labels GO         # mengambil contoh frame nyata
 ```
 
-### 6.5 Model AI (YOLOv8) — opsional
-Model hasil training ada di `models/best.pt` (YOLOv8, 3 kelas: `GO`, `SLOW`, `STOP`).
-Jalankan dengan:
+### Opsi baris perintah
+
+| Opsi | Fungsi |
+|------|--------|
+| `--mock` | simulasi tanpa hardware |
+| `--image PATH` | proses satu gambar |
+| `--save PATH` | simpan hasil gambar berannotasi |
+| `--method color_shape\|yolo` | metode pengenalan, default `color_shape` |
+| `--no-preview` | matikan jendela preview |
+| `--min-conf FLOAT` | ubah ambang confidence |
+
+### 6.6 Model YOLO (opsional)
+
+Di `models/best.pt` ada model YOLOv8 hasil training dengan 3 kelas (GO, SLOW, STOP).
+Cara pakainya:
+
 ```bash
 python3 src/main.py --method yolo
 ```
-- **Butuh Python ≥ 3.8** dan paket `ultralytics` (`pip install ultralytics`).
-- Di Jetson dengan **Python 3.6.9** (JetPack lama) `ultralytics` belum bisa dipasang;
-  `--method yolo` akan otomatis **fallback ke `color_shape`** dengan pesan
-  `[MODEL] Gagal load YOLO ...`. Metode `color_shape` sudah cukup untuk demo UTS.
-- Model dimuat dari `config.MODEL_PATH`; mapping kelas di `config.MODEL_CLASS_MAP`.
 
-### 6.6 Deteksi `color_shape` (default, cepat)
-Tiga perbaikan utama:
-1. **Bentuk dari convex hull** → teks/border/ikon di dalam tanda tidak merusak bentuk.
-2. **Fill-ratio** (luas hull ÷ luas lingkaran pembungkus) memisahkan bentuk dengan
-   jelas: segitiga ≈0.43, persegi ≈0.65, oktagon ≈0.90, lingkaran ≈1.00. Lebih
-   stabil daripada menghitung jumlah vertex saja.
-3. **Deteksi pada lebar `PROCESS_WIDTH = 320`** (downscale `INTER_AREA`) lalu bbox
-   dikembalikan ke skala frame asli. Kernel morfologi memakai **persegi** (separable)
-   yang jauh lebih cepat di Jetson daripada ellipse.
-
-Skor = `0.30·warna + 0.60·bentuk + 0.10·ukuran`. **Bentuk wajib cocok**
-(STOP=oktagon, SLOW=segitiga, GO=lingkaran/persegi); jika tidak, skor maksimum 0.40
-< threshold 0.55 → ditolak. Jadi objek hijau/biru/merah/kuning sembarang tidak lolos.
-
-**GO biru + panah putih:** selain GO hijau, tanda GO biru dengan panah putih juga
-dikenali. Panah putih (saturasi rendah) tidak masuk mask, sehingga kontur luar tetap
-berbentuk lingkaran/persegi. Range biru ada di `HSV_RANGES["blue"]` dan dipetakan ke
-GO melalui `COLOR_TO_SIGN`.
-
-Tuning di `config.py`:
-| Variabel | Default | Fungsi |
-|----------|---------|--------|
-| `PROCESS_WIDTH` | 320 | lebar kerja deteksi (`0` = full frame) |
-| `MIN_AREA_RATIO` | 0.004 | area kontur minimum relatif frame |
-| `STABLE_FRAMES` | 2 | jumlah frame konfirmasi (kecil = lebih responsif) |
-| `HSV_RANGES` | — | range warna; kalibrasi via `tools/hsv_calibration.py` |
-
-Benchmark & uji batch gambar:
-```bash
-python3 tools/benchmark_detection.py --bench          # ukur FPS
-python3 tools/benchmark_detection.py --dir fotoku     # uji semua gambar
-python3 tools/benchmark_detection.py --dir fotoku --expect STOP
-```
-Hasil terukur di Jetson ini: **~29 ms/frame (≈34 FPS)** untuk recognizer 640×480
-(sebelumnya ~70 ms / ~14 FPS; kamera membatasi end-to-end ke ±30 FPS), akurasi
-**56/56** pada uji sintetis (normal, jauh, dekat/terpotong, blur, rotasi ±12°,
-perspektif, gelap/terang, pudar, hue ±8, noise, resolusi 320) untuk STOP, SLOW,
-GO hijau, dan GO biru+panah.
-
+sayangnya model ini belum bisa dipakai di Jetson kami karena `ultralytics`
+membutuhkan Python 3.8 ke atas, sedangkan Jetson memakai Python 3.6.9. Jadi kalau
+`--method yolo` dipanggil, program otomatis turun ke metode `color_shape` dan
+mencetak pesan peringatan. Metode `color_shape` sudah cukup untuk demo tugas ini.
 
 ---
 
-## 7. Struktur Repositori
+## 7. Struktur Folder
 
 ```
-kelompok8/
-├── README.md                  ← dokumen ini
-├── config.py                  ← konfigurasi (pin, HSV, threshold, dsb)
+AI-For-Robotic_Kelompok8/
+├── README.md
+├── config.py                 konfigurasi pin, HSV, ambang, dll
 ├── requirements.txt
-├── models/
-│   └── best.pt                ← model YOLOv8 (kelas GO/SLOW/STOP, opsional)
 ├── src/
-│   ├── main.py                ← pipeline utama (camera→recognize→decide→GPIO)
-│   ├── camera.py              ← GStreamer (CSI) + V4L2 (USB) + flip
-│   ├── sign_recognition.py    ← color+shape heuristic & loader YOLO
-│   ├── decision_logic.py      ← konfirmasi temporal + safe-state
-│   └── gpio_control.py        ← Jetson.GPIO + mock fallback
+│   ├── main.py               pipeline utama
+│   ├── camera.py             kamera CSI (GStreamer) dan USB (V4L2)
+│   ├── sign_recognition.py   deteksi warna + bentuk, juga loader YOLO
+│   ├── decision_logic.py     konfirmasi temporal dan kondisi aman
+│   └── gpio_control.py       nyala/mati LED lewat Jetson.GPIO
 ├── tests/
-│   └── test_pipeline.py       ← unit test (decision, GPIO, recognizer)
+│   └── test_pipeline.py      unit test
 ├── tools/
-│   ├── hsv_calibration.py     ← kalibrasi HSV
-│   ├── capture_signs.py       ← ambil contoh frame nyata + diagnosis
-│   └── benchmark_detection.py ← benchmark FPS + uji batch gambar
+│   ├── hsv_calibration.py    kalibrasi warna
+│   ├── capture_signs.py      ambil contoh frame + diagnosis
+│   └── benchmark_detection.py
 ├── docs/
-│   ├── ARCHITECTURE.md        ← arsitektur sistem (detail)
-│   └── WIRING.md              ← diagram rangkaian + kalibrasi HSV
-├── assets/
-│   └── signs/                 ← gambar contoh sign (untuk --image & dokumentasi)
-└── results/                   ← screenshot & log pengujian
+│   ├── ARCHITECTURE.md       detail arsitektur
+│   └── WIRING.md             diagram rangkaian & langkah pemasangan
+├── models/
+│   └── best.pt               model YOLOv8 (opsional)
+├── assets/signs/             gambar contoh rambu
+└── results/                  screenshot dan log pengujian
 ```
 
-### Ekstensi ke AI/CNN
-`src/sign_recognition.py` mengembalikan objek `SignResult`. Untuk mengganti dengan
-CNN (mis. MobileNet / YOLO), cukup ganti isi fungsi `recognize()` agar memuat model
-dan mengembalikan `SignResult(sign, confidence, bbox)`. Decision logic & GPIO tidak
-berubah.
+Kalau mau mengganti metode pengenalan ke model AI lain, cukup ganti isi fungsi
+`recognize()` di `src/sign_recognition.py` supaya mengembalikan objek `SignResult`.
+Bagian decision logic dan GPIO tidak perlu disentuh.
 
 ---
 
 ## 8. Hasil Pengujian
 
-Dokumentasi pengujian lengkap (jarak, pencahayaan, pergantian sign, no-sign) ada di
-[`results/`](results/) dan ringkasan di bawah. **Isi tabel berikut saat pengujian nyata.**
+Rincian pengujian ada di [`results/TEST_LOG.md`](results/TEST_LOG.md).
 
-### 8.1 Pengujian per sign @ 3 jarak
-| Sign | 30 cm | 50 cm | 100 cm | LED sesuai? |
-|------|-------|-------|--------|-------------|
-| STOP (merah, segi-8) | | | | ☐ |
-| SLOW (kuning, segi-3) | | | | ☐ |
-| GO (biru + panah putih / hijau) | | | | ☐ |
+### 8.1 Unit test
 
-### 8.2 Pengujian 2 kondisi pencahayaan
-| Sign | Terang | Redup | Catatan |
-|------|--------|-------|---------|
-| STOP | | | |
-| SLOW | | | |
-| GO | | | |
+`python3 tests/test_pipeline.py` → **13/13 lulus**. Menguji decision logic, pemetaan
+LED, pengenalan ketiga rambu, dan penolakan rambu dengan bentuk yang salah.
 
-### 8.3 Pergantian sign & no-sign (safe state)
-| Skenario | Hasil ekspektasi | Hasil aktual |
-|----------|------------------|--------------|
-| STOP → SLOW | LED merah→kuning | |
-| SLOW → GO | LED kuning→hijau | |
-| GO → tidak ada sign (>0,5 dtk) | LED hijau→semua mati | |
-| confidence < threshold | semua LED mati | |
+### 8.2 Uji ketahanan
 
-### 8.4 Log mock (verifikasi otomatis)```
-input=STOP conf=0.92 → decision=STOP safe=False LED={'red': True,  ...}
-input=SLOW conf=0.88 → decision=SLOW safe=False LED={'yellow':True, ...}
-input=GO   conf=0.91 → decision=GO   safe=False LED={'green':True, ...}
-input=NONE conf=0.10 → decision=NONE safe=True  LED=semua OFF
-input=STOP conf=0.95 → decision=STOP safe=False LED={'red': True,  ...}
-```
-*Jalankan `python3 src/main.py --mock` untuk mereproduksi.*
+Empat jenis rambu (STOP, SLOW, GO hijau, GO biru) diuji dengan 14 kondisi berbeda:
+normal, jauh, dekat sampai terpotong, rotasi, perspektif, gelap, terang, derau,
+blur, warna pudar, pergeseran hue, dan resolusi turun. Hasilnya **56/56 benar**.
 
-### 8.5 Screenshot hasil (overlay preview + status LED)
+Rambu dengan warna benar tapi bentuk salah (misalnya segitiga merah atau oktagon
+biru) semuanya ditolak, tidak salah terbaca.
 
-| STOP (merah) | SLOW (kuning) | GO (biru + panah putih) |
+### 8.3 Kecepatan
+
+| Tahap | Sebelum | Sesudah |
+|-------|--------:|--------:|
+| Pengenalan | 70 ms (14 FPS) | 29 ms (34 FPS) |
+| Pipeline penuh | — | 28 ms (36 FPS) |
+
+Yang bikin cepat: deteksi dilakukan pada lebar 320 px, operasi morfologi memakai
+kernel persegi, dan bentuk dihitung dari convex hull.
+
+### 8.4 Pergantian rambu dan tanpa rambu
+
+| Skenario | Hasil yang diharapkan |
+|----------|----------------------|
+| STOP → SLOW | LED merah → kuning |
+| SLOW → GO | LED kuning → hijau |
+| GO → tanpa rambu | LED hijau → semua mati |
+| Keyakinan di bawah ambang | semua LED mati |
+
+### 8.5 Screenshot
+
+| STOP | SLOW | GO (biru + panah putih) |
 |---|---|---|
 | ![preview stop](results/preview_stop.jpg) | ![preview slow](results/preview_slow.jpg) | ![preview go biru](results/preview_go_biru_panah.jpg) |
 
-| GO (hijau) | Tanpa tanda (semua LED mati) |
+| GO (hijau) | Tanpa rambu |
 |---|---|
 | ![preview go](results/preview_go.jpg) | ![preview nosign](results/preview_nosign.jpg) |
 
-> Gambar di atas adalah hasil **sintetis** (dibuat dengan `tests/test_pipeline.py`).
-> Foto tanda & LED fisik asli diisi setelah uji lapangan — lihat
-> [`results/TEST_LOG.md`](results/TEST_LOG.md).
+Gambar di atas dibuat secara sintetis untuk dokumentasi. Foto rambu dan LED fisik
+asli ditambahkan di `results/` setelah uji lapangan.
+
+### 8.6 Uji lapangan
+
+| Rambu | 30 cm | 50 cm | 100 cm | LED sesuai? |
+|-------|-------|-------|--------|-------------|
+| STOP | | | | |
+| SLOW | | | | |
+| GO | | | | |
+
+| Rambu | Terang | Redup |
+|-------|--------|-------|
+| STOP | | |
+| SLOW | | |
+| GO | | |
 
 ---
 
-## 9. Troubleshooting
+## 9. Catatan dan Kendala
 
-| Gejala | Solusi |
-|--------|--------|
-| `ModuleNotFoundError: cv2` | `pip3 install opencv-python` atau gunakan JetPack preinstall |
-| `Jetson.GPIO` warning carrier board | Normal di board non-resmi; library tetap dipakai. Jika akses GPIO gagal, program fallback ke mock |
-| LED tidak nyala | Cek pin di `config.py`, polaritas LED, resistor, dan `LED_ACTIVE_HIGH` |
-| LED hijau tidak nyala di pin 15 | Pin 15/GPIO22 dipakai driver fan di board ini → pindahkan ke **pin 16/GPIO23** (sudah default di `config.py`) |
-| Kamera CSI tampil **hijau** | Kamera CSI wajib GStreamer: pastikan `USE_GSTREAMER_CAMERA = True` dan paket `python3-gi` terpasang (lihat `docs/WIRING.md`) |
-| `findContours` ValueError | OpenCV 3.x mengembalikan 3 nilai — kode sudah kompatibel (3.x & 4.x) |
-| Sign tidak terdeteksi | Kalibrasi ulang `HSV_RANGES` di `config.py` sesuai pencahayaan (lihat docs/WIRING.md §Kalibrasi) |
-| Deteksi flicker | Naikkan `stable_frames` di `DecisionEngine`, atau naikkan `MIN_CONFIDENCE` |
-| Preview tidak muncul (SSH) | Gunakan `--no-preview` atau X11 forwarding |
+- **Pin 15 tidak bisa dipakai.** GPIO22 (pin 15) dipakai driver fan di board ini,
+  jadi `gpiochip` menolak kalau kita menulis ke sana. LED hijau sekarang di pin 16
+  (GPIO23). Kalau butuh pin lain, tinggal ganti `LED_GREEN_PIN` di `config.py`.
+- **OpenCV bawaan JetPack tidak punya GStreamer.** Kamera CSI hanya bisa dibaca
+  lewat `nvarguscamerasrc`, itu yang dipakai `src/camera.py`.
+- **`ultralytics` belum bisa dipasang** di Python 3.6.9, jadi model YOLO belum aktif.
+- **Deteksi warna sensitif pada pencahayaan.** Kalau di tempat gelap rambu tidak
+  terbaca, rentang HSV di `config.py` perlu disesuaikan.
+- Angka desimal di dokumen ini ditulis dengan koma (0,55) sesuai kebiasaan bahasa
+  Indonesia, sedangkan di `config.py` tetap memakai titik (0.55) karena itu format
+  Python.
 
 ---
 
@@ -350,10 +365,6 @@ input=STOP conf=0.95 → decision=STOP safe=False LED={'red': True,  ...}
 | | |
 | | |
 
-> _Isi nama & NIM anggota kelompok di tabel above._
-| | |
-
 ---
 
-## Lisensi
-MIT — silakan dipakai untuk tugas UTS.
+Lisensi MIT.
