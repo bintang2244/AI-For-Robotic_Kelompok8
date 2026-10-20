@@ -4,10 +4,10 @@
 > di folder ini (`results/`).
 
 ## Setup
-- Hardware: Jetson Nano 4GB, USB webcam 640×480
-- Sistem: JetPack 4.6 / Ubuntu 18.04
--Tanggal: (isi)
-- Anggota: (isi)
+- Hardware: Jetson Nano 4GB, Kamera CSI imx219 640×480 @30fps, 3× LED + 3× resistor 220Ω, breadboard
+- Software: JetPack 4.x / Ubuntu 18.04 (arm64), Python 3.6.9, OpenCV 3.2.0
+- Tanggal: 20 Oktober 2026
+- Anggota: lihat README §10 (Anggota Kelompok)
 
 ## 1. Uji Mock (verifikasi pipeline tanpa hardware)
 Perintah: `python3 src/main.py --mock`

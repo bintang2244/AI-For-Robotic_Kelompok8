@@ -350,6 +350,9 @@ input=STOP conf=0.95 → decision=STOP safe=False LED={'red': True,  ...}
 | | |
 | | |
 
+> _Isi nama & NIM anggota kelompok di tabel above._
+| | |
+
 ---
 
 ## Lisensi
