@@ -20,6 +20,19 @@ menyalakan LED.
 
 [![Tonton Video Demo](https://drive.google.com/thumbnail?id=19MTVb-Pvqy-t6Fzr_xwGn6ziKQ6XT9tx)](https://drive.google.com/file/d/19MTVb-Pvqy-t6Fzr_xwGn6ziKQ6XT9tx/view)
 
+
+## 🏗️ Arsitektur Sistem
+
+Berikut adalah diagram alur sistem Traffic Sign Recognition pada Jetson Nano:
+
+```mermaid
+graph TD
+    A[Kamera / Sensor] -->|Input Gambar| B(Jetson Nano)
+    B -->|Proses AI| C{Model Deteksi Rambu}
+    C -->|Rambu Terdeteksi| D[Kontrol Aktuator: LED]
+    C -->|Tidak Ada Rambu| E[Lanjut / Abaikan]
+    D -->|Sinyal| F[LED Menyala]
+
 ## 1. Latar Belakang dan Tujuan
 
 Rambu STOP, SLOW, dan GO adalah tanda yang paling sering muncul di jalan kota.
