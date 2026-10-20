@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+# Uncomment jika tidak ingin commit screenshot besar:
+# results/*.jpg
+# results/*.png
+
+# Arsip torch hasil ekstraksi (sumber rekonstruksi models/best.pt)
+models/best/

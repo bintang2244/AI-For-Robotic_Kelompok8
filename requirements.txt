@@ -1,0 +1,18 @@
+# Dependensi runtime
+numpy>=1.19.0
+Jetson.GPIO>=2.0.0; platform_machine == "aarch64"
+
+# OpenCV — di Jetson Nano (Python 3.6) gunakan paket sistem JetPack:
+#   sudo apt-get install -y python3-opencv python3-numpy
+# Kode kompatibel OpenCV 3.x & 4.x (perbedaan findContours & approxPolyDP
+# sudah ditangani di src/sign_recognition.py).
+# opencv-python>=4.5.0
+
+# Kamera CSI Jetson (imx219) via GStreamer — paket sistem (bukan pip):
+#   sudo apt-get install -y python3-gi gir1.2-gstreamer-1.0
+#
+# Model AI opsional (models/best.pt = YOLOv8). Butuh Python >= 3.8:
+#   pip install ultralytics
+# Di Jetson ini (Python 3.6.9) ultralytics TIDAK bisa dipasang, sehingga
+# `--method yolo` otomatis fallback ke color_shape. Lihat README bagian Model AI.
+# ultralytics>=8.0.0; python_version >= "3.8"
